@@ -1,16 +1,24 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useStore } from '@/store/useStore';
 import { CATEGORY_LABELS } from '@/data/ingredients';
-import { Plus, Calendar, Check, X, PlusCircle } from 'lucide-react';
+import { Plus, Calendar, Check, X, PlusCircle, Package, Trash2, Settings } from 'lucide-react';
 import type { IngredientCategory, Ingredient } from '@/types';
 
 const categories: IngredientCategory[] = ['vegetable', 'protein', 'staple', 'seasoning'];
+
+const LONG_PRESS_DURATION = 500;
 
 export function Ingredients() {
   const [activeCategory, setActiveCategory] = useState<IngredientCategory>('vegetable');
   const [showAddModal, setShowAddModal] = useState(false);
   const [datePickerFor, setDatePickerFor] = useState<string | null>(null);
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showBatchDatePicker, setShowBatchDatePicker] = useState(false);
+  const [batchDate, setBatchDate] = useState(new Date().toISOString().slice(0, 10));
+
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const {
     getIngredientsByCategory,
@@ -20,20 +28,101 @@ export function Ingredients() {
     updatePurchaseDate,
     stockIngredients,
     addCustomIngredient,
+    getAllIngredients,
   } = useStore();
 
   const ingredients = getIngredientsByCategory(activeCategory);
   const categoryInfo = CATEGORY_LABELS[activeCategory];
+  const totalCount = stockIngredients.length;
+  const allIngredients = getAllIngredients();
+
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
 
   const handleToggle = (ingredientId: string) => {
-    if (isInStock(ingredientId)) {
-      removeStockIngredient(ingredientId);
+    if (isBatchMode) {
+      toggleSelected(ingredientId);
     } else {
-      addStockIngredient(ingredientId);
+      if (isInStock(ingredientId)) {
+        removeStockIngredient(ingredientId);
+      } else {
+        addStockIngredient(ingredientId);
+      }
     }
   };
 
-  const totalCount = stockIngredients.length;
+  const startLongPress = useCallback((id: string) => {
+    if (isBatchMode) return;
+    longPressTimer.current = setTimeout(() => {
+      setIsBatchMode(true);
+      setSelectedIds(new Set([id]));
+    }, LONG_PRESS_DURATION);
+  }, [isBatchMode]);
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
+
+  const exitBatchMode = useCallback(() => {
+    setIsBatchMode(false);
+    setSelectedIds(new Set());
+  }, []);
+
+  const batchAddToFridge = useCallback(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    selectedIds.forEach((id) => {
+      if (!isInStock(id)) {
+        addStockIngredient(id, today);
+      }
+    });
+    exitBatchMode();
+  }, [selectedIds, isInStock, addStockIngredient, exitBatchMode]);
+
+  const batchRemoveFromFridge = useCallback(() => {
+    selectedIds.forEach((id) => {
+      if (isInStock(id)) {
+        removeStockIngredient(id);
+      }
+    });
+    exitBatchMode();
+  }, [selectedIds, isInStock, removeStockIngredient, exitBatchMode]);
+
+  const batchSetDate = useCallback(() => {
+    selectedIds.forEach((id) => {
+      if (isInStock(id)) {
+        updatePurchaseDate(id, batchDate);
+      } else {
+        addStockIngredient(id, batchDate);
+      }
+    });
+    setShowBatchDatePicker(false);
+    exitBatchMode();
+  }, [selectedIds, isInStock, updatePurchaseDate, addStockIngredient, batchDate, exitBatchMode]);
+
+  const selectAllInCategory = useCallback(() => {
+    const categoryIds = ingredients.map((i) => i.id);
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      categoryIds.forEach((id) => next.add(id));
+      return next;
+    });
+  }, [ingredients]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+  }, []);
 
   return (
     <div className="min-h-screen pb-28">
@@ -43,18 +132,48 @@ export function Ingredients() {
           animate={{ opacity: 1, y: 0 }}
           className="mb-6"
         >
-          <h1 className="font-display text-3xl mb-1">
-            <span className={categoryInfo.color.split(' ')[0].replace('from-', 'text-').replace('-400', '-600')}>
-              {categoryInfo.emoji}
-            </span>{' '}
-            <span className="text-gradient">食材盘点</span>
-          </h1>
+          <div className="flex items-center justify-between">
+            <h1 className="font-display text-3xl mb-1">
+              <span className={categoryInfo.color.split(' ')[0].replace('from-', 'text-').replace('-400', '-600')}>
+                {categoryInfo.emoji}
+              </span>{' '}
+              <span className="text-gradient">食材盘点</span>
+            </h1>
+            {isBatchMode && (
+              <motion.button
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                onClick={exitBatchMode}
+                className="px-3 py-1.5 rounded-full bg-danger/10 text-danger text-sm font-medium hover:bg-danger/20 transition-colors"
+              >
+                取消
+              </motion.button>
+            )}
+          </div>
           <p className="text-sm text-gray-500">
-            勾选你冰箱里有的，我来帮你拼菜谱～
-            {totalCount > 0 && (
-              <span className="ml-2 chip-blue !py-0.5">
-                已选 {totalCount} 种
-              </span>
+            {isBatchMode ? (
+              <>
+                <span className="text-brand-500 font-semibold">批量选择模式</span>
+                <span className="mx-1">·</span>
+                已选 <span className="text-brand-500 font-bold">{selectedIds.size}</span> 种
+                <span className="mx-1">·</span>
+                <button onClick={selectAllInCategory} className="text-brand-500 underline underline-offset-2">
+                  全选当前分类
+                </button>
+                <span className="mx-1">·</span>
+                <button onClick={clearSelection} className="text-gray-400 underline underline-offset-2">
+                  清空
+                </button>
+              </>
+            ) : (
+              <>
+                长按食材进入批量选择，勾选你冰箱里有的～
+                {totalCount > 0 && (
+                  <span className="ml-2 chip-blue !py-0.5">
+                    已选 {totalCount} 种
+                  </span>
+                )}
+              </>
             )}
           </p>
         </motion.div>
@@ -69,6 +188,8 @@ export function Ingredients() {
             {categories.map((cat) => {
               const info = CATEGORY_LABELS[cat];
               const isActive = activeCategory === cat;
+              const catIngredients = getIngredientsByCategory(cat);
+              const selectedInCat = catIngredients.filter((i) => selectedIds.has(i.id)).length;
               return (
                 <button
                   key={cat}
@@ -81,6 +202,13 @@ export function Ingredients() {
                 >
                   <span className="text-lg">{info.emoji}</span>
                   <span className="whitespace-nowrap">{info.label}</span>
+                  {isBatchMode && selectedInCat > 0 && (
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                      isActive ? 'bg-white/30' : 'bg-brand-100 text-brand-600'
+                    }`}>
+                      {selectedInCat}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -97,6 +225,7 @@ export function Ingredients() {
         >
           {ingredients.map((ing, idx) => {
             const selected = isInStock(ing.id);
+            const batchSelected = selectedIds.has(ing.id);
             const stock = stockIngredients.find((s) => s.id === ing.id);
             return (
               <motion.div
@@ -107,41 +236,64 @@ export function Ingredients() {
               >
                 <button
                   onClick={() => handleToggle(ing.id)}
+                  onMouseDown={() => startLongPress(ing.id)}
+                  onMouseUp={cancelLongPress}
+                  onMouseLeave={cancelLongPress}
+                  onTouchStart={() => startLongPress(ing.id)}
+                  onTouchEnd={cancelLongPress}
+                  onTouchCancel={cancelLongPress}
                   onContextMenu={(e) => {
                     e.preventDefault();
-                    if (selected) setDatePickerFor(ing.id);
+                    if (isBatchMode) {
+                      handleToggle(ing.id);
+                    } else if (selected) {
+                      setDatePickerFor(ing.id);
+                    }
                   }}
                   className={`relative w-full aspect-square rounded-2xl p-2 flex flex-col items-center justify-center gap-1 transition-all duration-300 overflow-hidden group ${
-                    selected
+                    batchSelected
+                      ? 'bg-gradient-to-br from-brand-400 to-brand-500 text-white shadow-float scale-[1.02] ring-2 ring-brand-300 ring-offset-2'
+                      : selected
                       ? `bg-gradient-to-br ${categoryInfo.color} text-white shadow-float scale-[1.02]`
                       : 'bg-white border border-cream-200 hover:border-brand-300 hover:shadow-soft'
-                  }`}
+                  } ${isBatchMode ? 'cursor-pointer' : ''}`}
                 >
                   <motion.span
                     className="text-4xl sm:text-5xl"
-                    animate={selected ? { rotate: [0, -10, 10, 0], scale: [1, 1.1, 1] } : {}}
-                    transition={selected ? { duration: 0.4 } : {}}
+                    animate={selected && !batchSelected ? { rotate: [0, -10, 10, 0], scale: [1, 1.1, 1] } : {}}
+                    transition={selected && !batchSelected ? { duration: 0.4 } : {}}
                   >
                     {ing.emoji}
                   </motion.span>
                   <span
                     className={`text-xs font-medium truncate w-full text-center ${
-                      selected ? 'text-white/95' : 'text-gray-700'
+                      selected || batchSelected ? 'text-white/95' : 'text-gray-700'
                     }`}
                   >
                     {ing.name}
                   </span>
-                  {selected && (
+                  {(selected || batchSelected) && (
                     <motion.div
                       initial={{ scale: 0, rotate: -180 }}
                       animate={{ scale: 1, rotate: 0 }}
                       transition={{ type: 'spring', stiffness: 500 }}
-                      className="absolute top-1.5 right-1.5 w-6 h-6 bg-white rounded-full flex items-center justify-center shadow-md"
+                      className={`absolute top-1.5 right-1.5 w-6 h-6 rounded-full flex items-center justify-center shadow-md ${
+                        batchSelected ? 'bg-white text-brand-600' : 'bg-white text-fresh-dark'
+                      }`}
                     >
-                      <Check size={14} className="text-fresh-dark" strokeWidth={3} />
+                      <Check size={14} strokeWidth={3} />
                     </motion.div>
                   )}
-                  {stock && (
+                  {isBatchMode && batchSelected && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="absolute bottom-1.5 left-1.5 text-[10px] px-2 py-0.5 rounded-full bg-white/30 text-white backdrop-blur-sm"
+                    >
+                      已选
+                    </motion.div>
+                  )}
+                  {!isBatchMode && stock && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -162,26 +314,28 @@ export function Ingredients() {
             );
           })}
 
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: ingredients.length * 0.02 }}
-          >
-            <button
-              onClick={() => setShowAddModal(true)}
-              className="w-full aspect-square rounded-2xl p-2 flex flex-col items-center justify-center gap-1 border-2 border-dashed border-brand-300 bg-brand-50/50 text-brand-500 hover:bg-brand-50 hover:border-brand-400 transition-all group"
+          {!isBatchMode && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ delay: ingredients.length * 0.02 }}
             >
-              <PlusCircle
-                size={40}
-                className="group-hover:scale-110 transition-transform"
-                strokeWidth={1.5}
-              />
-              <span className="text-xs font-medium">自定义</span>
-            </button>
-          </motion.div>
+              <button
+                onClick={() => setShowAddModal(true)}
+                className="w-full aspect-square rounded-2xl p-2 flex flex-col items-center justify-center gap-1 border-2 border-dashed border-brand-300 bg-brand-50/50 text-brand-500 hover:bg-brand-50 hover:border-brand-400 transition-all group"
+              >
+                <PlusCircle
+                  size={40}
+                  className="group-hover:scale-110 transition-transform"
+                  strokeWidth={1.5}
+                />
+                <span className="text-xs font-medium">自定义</span>
+              </button>
+            </motion.div>
+          )}
         </motion.div>
 
-        {stockIngredients.length > 0 && (
+        {!isBatchMode && stockIngredients.length > 0 && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -236,6 +390,50 @@ export function Ingredients() {
       </div>
 
       <AnimatePresence>
+        {isBatchMode && selectedIds.size > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 100 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 100 }}
+            transition={{ type: 'spring', damping: 25 }}
+            className="fixed bottom-0 left-0 right-0 z-40 px-4 pb-6 pt-4 bg-gradient-to-t from-white via-white to-white/80 backdrop-blur-sm border-t border-cream-200"
+          >
+            <div className="max-w-lg mx-auto">
+              <div className="text-xs text-gray-500 mb-3 text-center">
+                已选择 <span className="font-bold text-brand-500">{selectedIds.size}</span> 种食材
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={batchAddToFridge}
+                  className="flex-1 btn-primary flex items-center justify-center gap-1.5"
+                >
+                  <Package size={18} />
+                  加入冰箱
+                </button>
+                <button
+                  onClick={batchRemoveFromFridge}
+                  className="flex-1 btn-danger flex items-center justify-center gap-1.5"
+                >
+                  <Trash2 size={18} />
+                  移出冰箱
+                </button>
+                <button
+                  onClick={() => {
+                    setBatchDate(new Date().toISOString().slice(0, 10));
+                    setShowBatchDatePicker(true);
+                  }}
+                  className="flex-1 btn-secondary flex items-center justify-center gap-1.5"
+                >
+                  <Settings size={18} />
+                  统一日期
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {datePickerFor && (
           <DatePickerModal
             ingredientId={datePickerFor}
@@ -249,8 +447,21 @@ export function Ingredients() {
               setDatePickerFor(null);
             }}
             ingredientName={
-              stockIngredients.find((s) => s.id === datePickerFor)?.name || ''
+              stockIngredients.find((s) => s.id === datePickerFor)?.name ||
+              allIngredients.find((i) => i.id === datePickerFor)?.name ||
+              ''
             }
+          />
+        )}
+        {showBatchDatePicker && (
+          <BatchDatePickerModal
+            count={selectedIds.size}
+            currentDate={batchDate}
+            onClose={() => setShowBatchDatePicker(false)}
+            onSave={(date) => {
+              setBatchDate(date);
+              batchSetDate();
+            }}
           />
         )}
         {showAddModal && (
@@ -315,6 +526,58 @@ function DatePickerModal({
           </button>
           <button onClick={() => onSave(date)} className="flex-1 btn-primary">
             <Check size={18} /> 保存
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function BatchDatePickerModal({
+  count,
+  currentDate,
+  onClose,
+  onSave,
+}: {
+  count: number;
+  currentDate: string;
+  onClose: () => void;
+  onSave: (date: string) => void;
+}) {
+  const [date, setDate] = useState(currentDate);
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ y: 100, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 100, opacity: 0 }}
+        transition={{ type: 'spring', damping: 25 }}
+        className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-sm p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="font-display text-xl text-gray-800 mb-1">
+          📅 统一设置购买日期
+        </h3>
+        <p className="text-sm text-gray-500 mb-5">将为 {count} 种食材设置相同的购买日期</p>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          max={new Date().toISOString().slice(0, 10)}
+          className="w-full px-4 py-3 rounded-xl border-2 border-cream-200 focus:border-brand-400 focus:outline-none text-lg mb-5"
+        />
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 btn-secondary">
+            取消
+          </button>
+          <button onClick={() => onSave(date)} className="flex-1 btn-primary">
+            <Check size={18} /> 确认执行
           </button>
         </div>
       </motion.div>

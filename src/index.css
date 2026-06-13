@@ -41,6 +41,13 @@ body {
            transition-all duration-200;
   }
 
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full
+           bg-gradient-to-r from-danger to-danger-light text-white font-medium
+           shadow-float hover:shadow-lg hover:scale-[1.02] active:scale-[0.98]
+           transition-all duration-200;
+  }
+
   .card {
     @apply bg-white rounded-3xl shadow-card border border-cream-200;
   }
